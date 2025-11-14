@@ -82,8 +82,6 @@ const main = async () => {
     },
   });
 
-  await adapterDB.init();
-
   const adapterFlow = createFlow([flowConsultasSaluto]);
   const adapterProvider = createProvider(BaileysProvider);
 
