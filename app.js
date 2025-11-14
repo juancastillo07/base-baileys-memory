@@ -79,9 +79,11 @@ const main = async () => {
       tlsInsecure: false,
       retryWrites: true,
       w: "majority",
-      serverSelectionTimeoutMS: 10000,
     },
   });
+
+  await adapterDB.init();
+
   const adapterFlow = createFlow([flowConsultasSaluto]);
   const adapterProvider = createProvider(BaileysProvider);
 
