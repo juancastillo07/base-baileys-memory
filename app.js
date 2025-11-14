@@ -8,7 +8,6 @@ const {
 require("dotenv").config();
 const QRPortalWeb = require("@bot-whatsapp/portal");
 const BaileysProvider = require("@bot-whatsapp/provider/baileys");
-// const MockAdapter = require("@bot-whatsapp/database/mock");
 const mongoAdapter = require("@bot-whatsapp/database/mongo");
 const { chat } = require("./ai");
 const path = require("path");
