@@ -69,6 +69,18 @@ const main = async () => {
   const adapterDB = new mongoAdapter({
     dbUri: process.env.MONGO_DB_API,
     dbName: "bot-whatsapp",
+    opts: {
+      serverApi: {
+        version: "1",
+        strict: true,
+        deprecationErrors: true,
+      },
+      tls: true,
+      tlsInsecure: false,
+      retryWrites: true,
+      w: "majority",
+      serverSelectionTimeoutMS: 10000,
+    },
   });
   const adapterFlow = createFlow([flowConsultasSaluto]);
   const adapterProvider = createProvider(BaileysProvider);
