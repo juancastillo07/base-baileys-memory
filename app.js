@@ -16,24 +16,41 @@ const fs = require("fs");
 const pathConsultas = path.join(__dirname, "mensajes", "promptConsultas.txt");
 const promptConsultas = fs.readFileSync(pathConsultas, "utf-8");
 
-// Control de sesiones
+// ===== CONTROL DE SESIONES =====
 const sesionesActivas = new Map();
-const TIMEOUT_SESION = 10 * 60 * 1000;
+const mensajesPendientes = new Map(); // Evitar mensajes duplicados
+const TIMEOUT_SESION = 10 * 60 * 1000; // 10 minutos
+const DELAY_ANTI_SPAM = 1000; // 1 segundo entre respuestas del bot
 
-const iniciarSesion = (userId) => {
+const iniciarSesion = (userId, modo = null) => {
   sesionesActivas.set(userId, {
-    activa: true,
+    modo: modo, // null, 'menu', 'soporte', 'faq'
     ultimaInteraccion: Date.now(),
-    enSoporte: false,
+    esperandoRespuesta: false,
   });
+};
+
+const obtenerSesion = (userId) => {
+  return sesionesActivas.get(userId);
+};
+
+const actualizarSesion = (userId, datos = {}) => {
+  const sesion = sesionesActivas.get(userId);
+  if (sesion) {
+    Object.assign(sesion, {
+      ...datos,
+      ultimaInteraccion: Date.now(),
+    });
+  }
 };
 
 const cerrarSesion = (userId) => {
   sesionesActivas.delete(userId);
+  mensajesPendientes.delete(userId);
 };
 
 const sesionActiva = (userId) => {
-  const sesion = sesionesActivas.get(userId);
+  const sesion = obtenerSesion(userId);
   if (!sesion) return false;
 
   if (Date.now() - sesion.ultimaInteraccion > TIMEOUT_SESION) {
@@ -41,217 +58,317 @@ const sesionActiva = (userId) => {
     return false;
   }
 
-  return sesion.activa;
+  return true;
 };
 
-const actualizarSesion = (userId, enSoporte = false) => {
-  const sesion = sesionesActivas.get(userId);
-  if (sesion) {
-    sesion.ultimaInteraccion = Date.now();
-    sesion.enSoporte = enSoporte;
+// Evitar procesar el mismo mensaje varias veces
+const yaProcesado = (userId, mensaje) => {
+  const key = `${userId}_${mensaje}`;
+  if (mensajesPendientes.has(key)) {
+    return true;
   }
+  mensajesPendientes.set(key, Date.now());
+  
+  // Limpiar mensajes viejos cada 30 segundos
+  setTimeout(() => mensajesPendientes.delete(key), 30000);
+  return false;
 };
-
-const estaEnSoporte = (userId) => {
-  const sesion = sesionesActivas.get(userId);
-  return sesion?.enSoporte || false;
-};
-
-const despedidas = [
-  "gracias", "adiós", "chao", "nos vemos", "bye", 
-  "listo", "ok gracias", "salir", "cancelar"
-];
 
 const esDespedida = (texto) => {
+  const despedidas = ["gracias", "adiós", "chao", "bye", "listo", "ok gracias", "salir", "cancelar"];
   const textoLower = texto.toLowerCase().trim();
-  return despedidas.some((palabra) => textoLower.includes(palabra));
+  return despedidas.some((d) => textoLower === d || textoLower.includes(` ${d}`) || textoLower.includes(`${d} `));
 };
 
-// Preguntas frecuentes
+const esMenu = (texto) => {
+  const textoLower = texto.toLowerCase().trim();
+  return textoLower === "menu" || textoLower === "menú" || textoLower === "volver";
+};
+
+// ===== PREGUNTAS FRECUENTES =====
 const preguntasFrecuentes = {
-  "1": {
-    pregunta: "¿Cómo accedo a SALUTO?",
-    respuesta: "Ingresa a app.saluto.com con tu usuario y contraseña. Si olvidaste tus datos, escribe a soporte@saluto.com"
-  },
-  "2": {
-    pregunta: "¿Cómo crear una historia clínica?",
-    respuesta: "Desde el menú principal > Pacientes > Nuevo Paciente. Llena los datos básicos y listo, ya puedes registrar consultas."
-  },
-  "3": {
-    pregunta: "¿Cómo agendar una cita?",
-    respuesta: "Ve a Agenda > Nueva Cita. Selecciona paciente, fecha, hora y profesional. ¡Así de fácil!"
-  },
-  "4": {
-    pregunta: "¿Cómo generar una factura?",
-    respuesta: "Desde la consulta del paciente > Facturar. Verifica los servicios y dale a Generar. Se crea automáticamente."
-  },
-  "5": {
-    pregunta: "¿SALUTO funciona sin internet?",
-    respuesta: "No, necesitas conexión a internet porque todo se guarda en la nube para mayor seguridad y acceso desde cualquier lugar."
-  },
-  "6": {
-    pregunta: "Problemas para entrar",
-    respuesta: "Verifica tu conexión, limpia caché del navegador o prueba en modo incógnito. Si persiste: soporte@saluto.com"
-  }
+  "1": "Ingresa a *app.saluto.com* con tu usuario y contraseña. Si olvidaste tus datos, escribe a soporte@saluto.com",
+  "2": "Menú principal > Pacientes > Nuevo Paciente. Llena los datos y ya puedes registrar consultas",
+  "3": "Agenda > Nueva Cita. Selecciona paciente, fecha, hora y profesional",
+  "4": "Desde la consulta > Facturar. Verifica servicios y dale a Generar",
+  "5": "No, necesitas internet porque todo se guarda en la nube para seguridad",
+  "6": "Verifica tu conexión, limpia caché o prueba en modo incógnito. Si persiste: soporte@saluto.com"
 };
 
-// FLOW 1: Saludo inicial con menú
-const flowInicio = addKeyword(["saluto", "ayuda", "hola"])
+// ===== FLOW 1: INICIO =====
+const flowInicio = addKeyword(["saluto", "ayuda", "hola", "inicio"])
   .addAnswer(
-    "¡Hola! 👋 Soy el asistente de *SALUTO*\n\n¿Qué necesitas?\n\n1️⃣ Hablar con soporte\n2️⃣ Ver preguntas frecuentes\n\nResponde con *1* o *2*",
+    "Hola 👋 Soy el asistente de *SALUTO*\n\n1️⃣ Soporte técnico\n2️⃣ Preguntas frecuentes\n\nResponde *1* o *2*",
     { capture: true },
     async (ctx, { gotoFlow, flowDynamic, fallBack }) => {
       const userId = ctx.from;
-      iniciarSesion(userId);
+      const mensaje = ctx.body.trim();
 
-      const opcion = ctx.body.trim();
+      // Evitar duplicados
+      if (yaProcesado(userId, mensaje)) return;
+
+      const opcion = mensaje;
 
       if (opcion === "1") {
-        actualizarSesion(userId, true);
+        iniciarSesion(userId, 'soporte');
         return gotoFlow(flowSoporte);
       } else if (opcion === "2") {
+        iniciarSesion(userId, 'faq');
         return gotoFlow(flowPreguntas);
       } else {
-        await flowDynamic("Por favor responde *1* para soporte o *2* para preguntas frecuentes");
+        await flowDynamic("Escribe *1* o *2*");
         return fallBack();
       }
     }
   );
 
-// FLOW 2: Soporte con IA
+// ===== FLOW 2: SOPORTE =====
 const flowSoporte = addKeyword(EVENTS.ACTION)
   .addAnswer(
-    "Perfecto, ¿en qué puedo ayudarte? 🤓\n\n_(Escribe *salir* si quieres terminar)_",
+    "¿En qué te ayudo? 🤓",
     { capture: true },
     async (ctx, { flowDynamic, fallBack, endFlow }) => {
       const userId = ctx.from;
-      const userMsg = ctx.body.trim();
+      const mensaje = ctx.body.trim();
 
-      if (esDespedida(userMsg)) {
+      if (yaProcesado(userId, mensaje)) return;
+
+      // Comandos especiales
+      if (esDespedida(mensaje)) {
         cerrarSesion(userId);
-        await flowDynamic("¡Listo! Cualquier cosa, escribe *saluto* de nuevo 👍");
+        await flowDynamic("Listo, escribe *saluto* cuando necesites 👍");
         return endFlow();
       }
 
-      try {
-        const prompt = `${promptConsultas}\n\nUsuario: ${userMsg}`;
-        const response = await chat(prompt);
-        await flowDynamic(response);
-      } catch (error) {
-        console.error("Error en IA:", error);
-        await flowDynamic("Ups, algo falló. ¿Puedes repetir?");
+      if (esMenu(mensaje)) {
+        cerrarSesion(userId);
+        await flowDynamic("Escribe *saluto* para volver al menú");
+        return endFlow();
       }
 
-      actualizarSesion(userId, true);
+      // Validar mensaje no vacío
+      if (!mensaje || mensaje.length < 3) {
+        await flowDynamic("Escribe tu consulta con más detalle");
+        return fallBack();
+      }
+
+      // Procesar con IA
+      try {
+        const sesion = obtenerSesion(userId);
+        
+        // Evitar múltiples consultas simultáneas
+        if (sesion && sesion.esperandoRespuesta) {
+          return;
+        }
+
+        actualizarSesion(userId, { esperandoRespuesta: true });
+
+        const prompt = `${promptConsultas}\n\nUsuario: ${mensaje}`;
+        const response = await Promise.race([
+          chat(prompt),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Timeout")), 25000)
+          )
+        ]);
+
+        if (response && response.trim()) {
+          await flowDynamic(response);
+        } else {
+          await flowDynamic("No pude generar una respuesta. Intenta reformular tu pregunta");
+        }
+
+        actualizarSesion(userId, { esperandoRespuesta: false });
+        
+      } catch (error) {
+        console.error("Error en IA:", error.message);
+        actualizarSesion(userId, { esperandoRespuesta: false });
+        
+        await flowDynamic(
+          "No pude procesar tu consulta. Para ayuda directa escribe a *soporte@saluto.com*"
+        );
+      }
+
       return fallBack();
     }
   );
 
-// FLOW 3: Preguntas frecuentes
+// ===== FLOW 3: PREGUNTAS FRECUENTES =====
 const flowPreguntas = addKeyword(EVENTS.ACTION)
   .addAnswer(
-    "📋 *Preguntas Frecuentes*\n\n1. ¿Cómo accedo a SALUTO?\n2. ¿Cómo crear una historia clínica?\n3. ¿Cómo agendar una cita?\n4. ¿Cómo generar una factura?\n5. ¿SALUTO funciona sin internet?\n6. Problemas para entrar\n\nEscribe el *número* de tu pregunta o *menu* para volver",
+    "📋 *Preguntas Frecuentes*\n\n1. ¿Cómo accedo?\n2. Crear historia clínica\n3. Agendar cita\n4. Generar factura\n5. ¿Funciona sin internet?\n6. Problemas de acceso\n\nEscribe el *número*",
     { capture: true },
-    async (ctx, { flowDynamic, gotoFlow, fallBack, endFlow }) => {
+    async (ctx, { flowDynamic, fallBack, endFlow }) => {
       const userId = ctx.from;
-      const opcion = ctx.body.trim().toLowerCase();
+      const mensaje = ctx.body.trim();
 
-      if (opcion === "menu" || opcion === "menú") {
-        return gotoFlow(flowInicio);
-      }
+      if (yaProcesado(userId, mensaje)) return;
 
-      if (esDespedida(opcion)) {
+      // Comandos especiales
+      if (esDespedida(mensaje)) {
         cerrarSesion(userId);
-        await flowDynamic("¡Perfecto! Nos vemos 👋");
+        await flowDynamic("¡Perfecto! 👋");
         return endFlow();
       }
 
-      const faq = preguntasFrecuentes[opcion];
+      if (esMenu(mensaje)) {
+        cerrarSesion(userId);
+        await flowDynamic("Escribe *saluto* para el menú");
+        return endFlow();
+      }
+
+      // Procesar FAQ
+      const respuesta = preguntasFrecuentes[mensaje];
       
-      if (faq) {
-        await flowDynamic(`*${faq.pregunta}*\n\n${faq.respuesta}\n\n---\n¿Otra pregunta? Escribe el número o *menu* para opciones`);
+      if (respuesta) {
+        await flowDynamic(respuesta);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await flowDynamic("¿Otra pregunta? Escribe el número o *saluto* para el menú");
         actualizarSesion(userId);
         return fallBack();
       } else {
-        await flowDynamic("Elige un número del 1 al 6, o escribe *menu* para volver");
+        await flowDynamic("Elige un número del 1 al 6");
         return fallBack();
       }
     }
   );
 
-// FLOW 4: Conversación continua (cuando ya hay sesión activa)
+// ===== FLOW 4: CONVERSACIÓN CONTINUA =====
 const flowConversacion = addKeyword(EVENTS.WELCOME).addAction(
-  async (ctx, { flowDynamic, fallBack, endFlow, gotoFlow }) => {
+  async (ctx, { flowDynamic, fallBack, endFlow }) => {
     const userId = ctx.from;
+    const mensaje = ctx.body.trim();
 
+    // Ignorar si no hay sesión activa
     if (!sesionActiva(userId)) {
       return endFlow();
     }
 
-    const userMsg = ctx.body.trim();
+    // Evitar duplicados
+    if (yaProcesado(userId, mensaje)) return;
 
-    if (esDespedida(userMsg)) {
+    const sesion = obtenerSesion(userId);
+
+    // Comandos globales
+    if (esDespedida(mensaje)) {
       cerrarSesion(userId);
-      await flowDynamic("¡Listo! Para hablar de nuevo, escribe *saluto* 👋");
+      await flowDynamic("¡Hasta luego! Escribe *saluto* cuando necesites 👋");
       return endFlow();
     }
 
-    // Si escriben "menu" en cualquier momento
-    if (userMsg.toLowerCase() === "menu" || userMsg.toLowerCase() === "menú") {
-      return gotoFlow(flowInicio);
+    if (esMenu(mensaje)) {
+      cerrarSesion(userId);
+      await flowDynamic("Escribe *saluto* para volver");
+      return endFlow();
     }
 
-    // Si están en modo soporte, continuar con IA
-    if (estaEnSoporte(userId)) {
-      try {
-        const prompt = `${promptConsultas}\n\nUsuario: ${userMsg}`;
-        const response = await chat(prompt);
-        await flowDynamic(response);
-        actualizarSesion(userId, true);
-      } catch (error) {
-        console.error("Error en IA:", error);
-        await flowDynamic("Ups, algo falló. ¿Puedes repetir?");
+    // Continuar en el modo activo
+    if (sesion.modo === 'soporte') {
+      // Validar mensaje
+      if (!mensaje || mensaje.length < 3) {
+        await flowDynamic("Escribe tu consulta");
+        return fallBack();
       }
+
+      // Evitar múltiples consultas simultáneas
+      if (sesion.esperandoRespuesta) {
+        return;
+      }
+
+      try {
+        actualizarSesion(userId, { esperandoRespuesta: true });
+
+        const prompt = `${promptConsultas}\n\nUsuario: ${mensaje}`;
+        const response = await Promise.race([
+          chat(prompt),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Timeout")), 25000)
+          )
+        ]);
+
+        if (response && response.trim()) {
+          await flowDynamic(response);
+        } else {
+          await flowDynamic("No pude generar respuesta. Escribe a *soporte@saluto.com*");
+        }
+
+        actualizarSesion(userId, { esperandoRespuesta: false });
+
+      } catch (error) {
+        console.error("Error en IA:", error.message);
+        actualizarSesion(userId, { esperandoRespuesta: false });
+        await flowDynamic("Error al procesar. Contacta a *soporte@saluto.com*");
+      }
+
       return fallBack();
+    }
+
+    if (sesion.modo === 'faq') {
+      const respuesta = preguntasFrecuentes[mensaje];
+      
+      if (respuesta) {
+        await flowDynamic(respuesta);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await flowDynamic("¿Otra pregunta? Número o *saluto* para menú");
+        actualizarSesion(userId);
+        return fallBack();
+      } else {
+        await flowDynamic("Número del 1 al 6");
+        return fallBack();
+      }
     }
 
     return endFlow();
   }
 );
 
+// ===== INICIALIZACIÓN =====
 const main = async () => {
-  const adapterDB = new mongoAdapter({
-    dbUri: process.env.MONGO_DB_API,
-    dbName: "bot-whatsapp",
-    opts: {
-      serverApi: {
-        version: "1",
-        strict: true,
-        deprecationErrors: true,
+  try {
+    const adapterDB = new mongoAdapter({
+      dbUri: process.env.MONGO_DB_API,
+      dbName: "bot-whatsapp",
+      opts: {
+        serverApi: { version: "1", strict: true, deprecationErrors: true },
+        tls: true,
+        tlsInsecure: false,
+        retryWrites: true,
+        w: "majority",
       },
-      tls: true,
-      tlsInsecure: false,
-      retryWrites: true,
-      w: "majority",
-    },
-  });
+    });
 
-  const adapterFlow = createFlow([
-    flowInicio,
-    flowSoporte,
-    flowPreguntas,
-    flowConversacion,
-  ]);
-  
-  const adapterProvider = createProvider(BaileysProvider);
+    const adapterFlow = createFlow([
+      flowInicio,
+      flowSoporte,
+      flowPreguntas,
+      flowConversacion,
+    ]);
 
-  createBot({
-    flow: adapterFlow,
-    provider: adapterProvider,
-    database: adapterDB,
-  });
+    const adapterProvider = createProvider(BaileysProvider);
 
-  QRPortalWeb();
+    createBot({
+      flow: adapterFlow,
+      provider: adapterProvider,
+      database: adapterDB,
+    });
+
+    QRPortalWeb();
+
+    console.log("✅ Bot SALUTO iniciado correctamente");
+
+    // Limpiar sesiones expiradas cada 5 minutos
+    setInterval(() => {
+      const ahora = Date.now();
+      for (const [userId, sesion] of sesionesActivas.entries()) {
+        if (ahora - sesion.ultimaInteraccion > TIMEOUT_SESION) {
+          cerrarSesion(userId);
+        }
+      }
+    }, 5 * 60 * 1000);
+
+  } catch (error) {
+    console.error("❌ Error al iniciar el bot:", error);
+    process.exit(1);
+  }
 };
 
 main();
